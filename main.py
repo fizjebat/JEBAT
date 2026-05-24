@@ -466,3 +466,59 @@ if __name__ == '__main__':
     scheduler.start()
     send_admin_log("🟢 <b>Project JEBAT Booted</b>\nGhost Sniper v4.0 (REST API) Online.\nScanner | Watchlist | Monitor Active.")
     app.run(host='0.0.0.0', port=PORT)
+
+@app.route('/test-telegram')
+def test_telegram():
+    """Test endpoint untuk debug Telegram connection"""
+    results = {
+        "bot_token_set": bool(TELEGRAM_BOT_TOKEN),
+        "admin_chat_id_set": bool(ADMIN_CHAT_ID),
+        "channel_id_set": bool(TELEGRAM_CHANNEL_ID),
+        "admin_test": None,
+        "channel_test": None,
+        "errors": []
+    }
+    
+    # Test 1: Send to Admin
+    if TELEGRAM_BOT_TOKEN and ADMIN_CHAT_ID:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            payload = {
+                'chat_id': ADMIN_CHAT_ID,
+                'text': '🧪 <b>Test Message to Admin</b>\nJika kau nampak ini, Admin DM berfungsi!',
+                'parse_mode': 'HTML'
+            }
+            resp = requests.post(url, data=payload, timeout=10)
+            if resp.status_code == 200:
+                results["admin_test"] = "SUCCESS"
+            else:
+                results["admin_test"] = "FAILED"
+                results["errors"].append(f"Admin API: {resp.text}")
+        except Exception as e:
+            results["admin_test"] = "ERROR"
+            results["errors"].append(f"Admin Exception: {str(e)}")
+    else:
+        results["errors"].append("Missing TELEGRAM_BOT_TOKEN or ADMIN_CHAT_ID")
+    
+    # Test 2: Send to Channel
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            payload = {
+                'chat_id': TELEGRAM_CHANNEL_ID,
+                'text': '🧪 <b>Test Message to Channel</b>\nJika kau nampak ini, Channel berfungsi!',
+                'parse_mode': 'HTML'
+            }
+            resp = requests.post(url, data=payload, timeout=10)
+            if resp.status_code == 200:
+                results["channel_test"] = "SUCCESS"
+            else:
+                results["channel_test"] = "FAILED"
+                results["errors"].append(f"Channel API: {resp.text}")
+        except Exception as e:
+            results["channel_test"] = "ERROR"
+            results["errors"].append(f"Channel Exception: {str(e)}")
+    else:
+        results["errors"].append("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHANNEL_ID")
+    
+    return jsonify(results)
