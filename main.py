@@ -43,8 +43,13 @@ def supabase_insert(table, data):
 def supabase_select(table, columns="*", params=None):
     url = f"{SUPABASE_URL}/rest/v1/{table}?select={columns}"
     if params:
-        for k, v in params.items():
-            url += f"&{k}={v}"
+        # Handle both dict and string params
+        if isinstance(params, dict):
+            for k, v in params.items():
+                url += f"&{k}={v}"
+        elif isinstance(params, str):
+            # If params is already a query string, append directly
+            url += f"&{params}"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10)
         if resp.status_code == 200:
@@ -52,7 +57,7 @@ def supabase_select(table, columns="*", params=None):
         return []
     except Exception as e:
         logging.error(f"Supabase select error: {e}")
-        return []
+        return []]
 
 def supabase_update(table, data, filters):
     url = f"{SUPABASE_URL}/rest/v1/{table}"
