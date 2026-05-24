@@ -57,7 +57,7 @@ def supabase_select(table, columns="*", params=None):
         return []
     except Exception as e:
         logging.error(f"Supabase select error: {e}")
-        return []]
+        return []
 
 def supabase_update(table, data, filters):
     url = f"{SUPABASE_URL}/rest/v1/{table}"
