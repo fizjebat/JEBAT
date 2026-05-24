@@ -439,9 +439,39 @@ def generate_weekly_report():
     send_admin_log(f"📊 <b>Weekly Report Sent:</b> WR {win_rate:.1f}% | ROI {avg_roi:+.2f}%")
 
 # ==========================================
-# 🏢 FLASK APP
+# 🏢 FLASK APP & SCHEDULER INITIALIZATION
 # ==========================================
 app = Flask(__name__)
+
+# Global flag untuk elak duplicate scheduler dalam multiple workers
+_scheduler_started = False
+
+def start_scheduler():
+    """Start APScheduler - dipanggil sekali sahaja walaupun multiple workers"""
+    global _scheduler_started
+    
+    if _scheduler_started:
+        return
+    
+    scheduler = BackgroundScheduler()
+    
+    # Scan market every 15 minutes
+    scheduler.add_job(job_scan_market, 'interval', minutes=15, next_run_time=datetime.now())
+    
+    # Monitor watchlist every 3 minutes (for pullback detection)
+    scheduler.add_job(job_monitor_watchlist, 'interval', minutes=3)
+    
+    # Monitor active signals every 2 minutes
+    scheduler.add_job(job_monitor_signals, 'interval', minutes=2)
+    
+    # Weekly report every Sunday 11 PM UTC
+    scheduler.add_job(generate_weekly_report, 'cron', day_of_week='sun', hour=23, minute=0)
+    
+    scheduler.start()
+    _scheduler_started = True
+    
+    # Send boot message hanya sekali (first worker)
+    send_admin_log("🟢 <b>Project JEBAT Booted</b>\nGhost Sniper v4.0 (REST API) Online.\nScanner | Watchlist | Monitor Active.")
 
 @app.route('/')
 def home():
@@ -449,23 +479,18 @@ def home():
 
 @app.route('/health')
 def health():
-    # Simple health check - if we can reach Supabase, we're good
     try:
         resp = requests.get(f"{SUPABASE_URL}/rest/v1/signals?select=count", headers=HEADERS, timeout=5)
         db_status = "OK" if resp.status_code == 200 else "ERROR"
     except:
         db_status = "ERROR"
-    return jsonify({"status": "healthy", "database": db_status, "timestamp": datetime.now(timezone.utc).isoformat()})
-
-if __name__ == '__main__':
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(job_scan_market, 'interval', minutes=15, next_run_time=datetime.now())
-    scheduler.add_job(job_monitor_watchlist, 'interval', minutes=3)
-    scheduler.add_job(job_monitor_signals, 'interval', minutes=2)
-    scheduler.add_job(generate_weekly_report, 'cron', day_of_week='sun', hour=23, minute=0)
-    scheduler.start()
-    send_admin_log("🟢 <b>Project JEBAT Booted</b>\nGhost Sniper v4.0 (REST API) Online.\nScanner | Watchlist | Monitor Active.")
-    app.run(host='0.0.0.0', port=PORT)
+    
+    return jsonify({
+        "status": "healthy",
+        "database": db_status,
+        "scheduler": "running" if _scheduler_started else "not_started",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
 
 @app.route('/test-telegram')
 def test_telegram():
@@ -476,10 +501,10 @@ def test_telegram():
         "channel_id_set": bool(TELEGRAM_CHANNEL_ID),
         "admin_test": None,
         "channel_test": None,
+        "scheduler_running": _scheduler_started,
         "errors": []
     }
     
-    # Test 1: Send to Admin
     if TELEGRAM_BOT_TOKEN and ADMIN_CHAT_ID:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -489,18 +514,13 @@ def test_telegram():
                 'parse_mode': 'HTML'
             }
             resp = requests.post(url, data=payload, timeout=10)
-            if resp.status_code == 200:
-                results["admin_test"] = "SUCCESS"
-            else:
-                results["admin_test"] = "FAILED"
+            results["admin_test"] = "SUCCESS" if resp.status_code == 200 else "FAILED"
+            if resp.status_code != 200:
                 results["errors"].append(f"Admin API: {resp.text}")
         except Exception as e:
             results["admin_test"] = "ERROR"
             results["errors"].append(f"Admin Exception: {str(e)}")
-    else:
-        results["errors"].append("Missing TELEGRAM_BOT_TOKEN or ADMIN_CHAT_ID")
     
-    # Test 2: Send to Channel
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -510,15 +530,22 @@ def test_telegram():
                 'parse_mode': 'HTML'
             }
             resp = requests.post(url, data=payload, timeout=10)
-            if resp.status_code == 200:
-                results["channel_test"] = "SUCCESS"
-            else:
-                results["channel_test"] = "FAILED"
+            results["channel_test"] = "SUCCESS" if resp.status_code == 200 else "FAILED"
+            if resp.status_code != 200:
                 results["errors"].append(f"Channel API: {resp.text}")
         except Exception as e:
             results["channel_test"] = "ERROR"
             results["errors"].append(f"Channel Exception: {str(e)}")
-    else:
-        results["errors"].append("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHANNEL_ID")
     
     return jsonify(results)
+
+# ==========================================
+# 🚀 AUTO-START SCHEDULER ON IMPORT
+# ==========================================
+# Ini akan run bila gunicorn import module ini
+# Gunicorn biasanya spawn 1 worker untuk free tier, jadi ini selamat
+start_scheduler()
+
+if __name__ == '__main__':
+    # Fallback untuk local development (bukan production)
+    app.run(host='0.0.0.0', port=PORT)
