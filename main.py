@@ -492,17 +492,15 @@ def job_scan_market():
     found_fast = 0
     added_watchlist = 0
     
-    for chain in TARGET_CHAINS:
-    pools = fetch_new_pools(chain)
-    logging.info(f"📡 [SCAN] {chain.upper()}: Fetched {len(pools)} pools")
-    
-    # ✅ VALIDATION: Skip chain jika tiada data (elak error downstream)
-    if not pools:
-        logging.warning(f"⚠️ [SKIP] {chain.upper()}: Tiada data — chain ini diabaikan")
-        continue
-    
-    for pool in pools:
+        for chain in TARGET_CHAINS:
+        pools = fetch_new_pools(chain)
+        logging.info(f"📡 [SCAN] {chain.upper()}: Fetched {len(pools)} pools")
         
+        # ✅ VALIDATION: Skip chain jika tiada data
+        if not pools:
+            logging.warning(f"⚠️ [SKIP] {chain.upper()}: Tiada data — chain ini diabaikan")
+            continue
+            
         for pool in pools:
             total_scanned += 1
             attrs = pool['attributes']
@@ -553,38 +551,38 @@ def job_scan_market():
             
             signal_type = classify_signal_type(pool)
             
-        # ✅ FIX: Indentation — ini WAJIB dalam loop `for pool in pools`
-        if signal_type == 'FAST':
-            logging.info(f"⚡ [CLASSIFY] {token_name}: FAST BREAKOUT")
-            
-            if not audit_passed:
-                rejected_reasons['audit_failed'] += 1
-                logging.warning(f"🗑️ [AUDIT] {token_name}: FAILED - {audit_msg}")
-                continue
+            # ✅ FIX INDENTATION: 'if' ini WAJIB berada di DALAM loop 'for pool'
+            if signal_type == 'FAST':
+                logging.info(f"⚡ [CLASSIFY] {token_name}: FAST BREAKOUT")
+                audit_passed, audit_msg = auto_audit_token(chain, token_address)
+                
+                if not audit_passed:
+                    rejected_reasons['audit_failed'] += 1
+                    logging.warning(f"🗑️ [AUDIT] {token_name}: FAILED - {audit_msg}")
+                    continue
 
-            # Guna 20% dari price sebagai ATR estimate
-            atr_estimate = entry_price * 0.20
-            targets = calculate_targets(entry_price, atr_estimate)
-            
-            sig_data = {
-                'chain': chain, 
-                'token_address': token_address,
-                'pool_address': pool_address, 
-                'token_name': token_name,
-                'entry_price': entry_price, 
-                'signal_type': 'FAST', 
-                **targets
-            }
-            
-            text = format_signal_text(sig_data, "ACTIVE", audit_msg)
-            keyboard = build_keyboard(chain, token_address, pool_address, token_name, audit_msg)
-            msg_id = send_telegram_message(text, keyboard)
-            
-            if msg_id:
-                sig_data['tg_msg_id'] = msg_id
-                if save_signal(sig_data):
-                    found_fast += 1
-                    logging.info(f"📤 [SIGNAL] {token_name}: SENT (msg_id={msg_id})")
+                atr_estimate = entry_price * 0.20
+                targets = calculate_targets(entry_price, atr_estimate) 
+                
+                sig_data = {
+                    'chain': chain, 
+                    'token_address': token_address,
+                    'pool_address': pool_address, 
+                    'token_name': token_name,
+                    'entry_price': entry_price, 
+                    'signal_type': 'FAST', 
+                    **targets
+                }
+                
+                text = format_signal_text(sig_data, "ACTIVE", audit_msg)
+                keyboard = build_keyboard(chain, token_address, pool_address, token_name, audit_msg)
+                msg_id = send_telegram_message(text, keyboard)
+                
+                if msg_id:
+                    sig_data['tg_msg_id'] = msg_id
+                    if save_signal(sig_data):
+                        found_fast += 1
+                        logging.info(f"📤 [SIGNAL] {token_name}: SENT (msg_id={msg_id})")
             else:
                 logging.info(f"🎯 [CLASSIFY] {token_name}: PULLBACK CANDIDATE")
                 watchlist_data = {
