@@ -298,53 +298,135 @@ def send_admin_log(text):
 # ==========================================
 def job_scan_market():
     send_admin_log("🔍 <b>System:</b> Starting market scan...")
+    logging.info("🔍 [SCAN] Starting market scan cycle")
+    
+    total_scanned = 0
+    passed_basic = 0
+    rejected_reasons = {
+        'age': 0,
+        'liquidity': 0,
+        'volume': 0,
+        'fdv': 0,
+        'momentum': 0,
+        'duplicate': 0,
+        'audit_failed': 0
+    }
     found_fast = 0
     added_watchlist = 0
     
     for chain in TARGET_CHAINS:
         pools = fetch_new_pools(chain)
+        logging.info(f"📡 [SCAN] {chain.upper()}: Fetched {len(pools)} pools")
+        
         for pool in pools:
-            if is_valid_basic_filter(pool, chain):
-                attrs = pool['attributes']
-                token_address = pool['relationships']['base_token']['data']['id'].split('_')[1]
-                pool_address = pool['id'].split('_')[1]
-                token_name = attrs.get('name', 'Unknown').split(' / ')[0]
-                entry_price = float(attrs['base_token_price_usd'])
+            total_scanned += 1
+            attrs = pool['attributes']
+            token_name = attrs.get('name', 'Unknown').split(' / ')[0]
+            
+            # Detailed filter logging
+            created_at = datetime.fromisoformat(attrs['pool_created_at'].replace('Z', '+00:00'))
+            age_hours = (datetime.now(timezone.utc) - created_at).total_seconds() / 3600
+            liq = float(attrs.get('reserve_in_usd', 0))
+            vol_h24 = float(attrs.get('volume_usd', {}).get('h24', 0))
+            fdv = float(attrs.get('fdv_usd', 0))
+            h1_change = float(attrs.get('price_change_percentage', {}).get('h1', 0))
+            h1_buys = int(attrs.get('transactions', {}).get('h1', {}).get('buys', 0))
+            
+            # Check each filter individually with logging
+            if not (2 <= age_hours <= 168):
+                rejected_reasons['age'] += 1
+                logging.debug(f"❌ [FILTER] {token_name} ({chain}): REJECTED - Age {age_hours:.1f}h (need 2-168h)")
+                continue
+            
+            if liq < 30000:
+                rejected_reasons['liquidity'] += 1
+                logging.debug(f"❌ [FILTER] {token_name} ({chain}): REJECTED - Liquidity ${liq:,.0f} (need >$30k)")
+                continue
+            
+            if vol_h24 < 100000:
+                rejected_reasons['volume'] += 1
+                logging.debug(f"❌ [FILTER] {token_name} ({chain}): REJECTED - Volume ${vol_h24:,.0f} (need >$100k)")
+                continue
+            
+            if not (50000 <= fdv <= 5000000):
+                rejected_reasons['fdv'] += 1
+                logging.debug(f"❌ [FILTER] {token_name} ({chain}): REJECTED - FDV ${fdv:,.0f} (need $50k-$5M)")
+                continue
+            
+            if h1_change <= 0 or h1_buys < 50:
+                rejected_reasons['momentum'] += 1
+                logging.debug(f"❌ [FILTER] {token_name} ({chain}): REJECTED - Momentum {h1_change:+.1f}% / {h1_buys} buys")
+                continue
+            
+            passed_basic += 1
+            token_address = pool['relationships']['base_token']['data']['id'].split('_')[1]
+            pool_address = pool['id'].split('_')[1]
+            entry_price = float(attrs['base_token_price_usd'])
+            
+            logging.info(f"✅ [FILTER] {token_name} ({chain}): PASSED basic filter | Liq=${liq:,.0f} Vol=${vol_h24:,.0f} FDV=${fdv:,.0f}")
+            
+            # Check duplicate
+            existing = supabase_select("signals", "id", f"token_address=eq.{token_address}&created_at=gt.{(datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()}")
+            if existing:
+                rejected_reasons['duplicate'] += 1
+                logging.info(f"⏭️ [SKIP] {token_name} ({chain}): Already sent in last 24h")
+                continue
+            
+            signal_type = classify_signal_type(pool)
+            
+            if signal_type == 'FAST':
+                logging.info(f"⚡ [CLASSIFY] {token_name} ({chain}): FAST BREAKOUT (24h change <80%)")
+                audit_passed, audit_msg = auto_audit_token(chain, token_address)
                 
-                # Check if already sent in last 24h
-                existing = supabase_select("signals", "id", f"token_address=eq.{token_address}&created_at=gt.{(datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()}")
-                if existing:
+                if not audit_passed:
+                    rejected_reasons['audit_failed'] += 1
+                    logging.warning(f"🗑️ [AUDIT] {token_name} ({chain}): FAILED - {audit_msg}")
+                    send_admin_log(f"🗑️ <b>Rejected:</b> {token_name} ({audit_msg})")
                     continue
                 
-                signal_type = classify_signal_type(pool)
+                logging.info(f"🛡️ [AUDIT] {token_name} ({chain}): PASSED - {audit_msg}")
                 
-                if signal_type == 'FAST':
-                    audit_passed, audit_msg = auto_audit_token(chain, token_address)
-                    if not audit_passed:
-                        send_admin_log(f"🗑️ <b>Rejected:</b> {token_name} ({audit_msg})")
-                        continue
-                    
-                    targets = calculate_targets(entry_price)
-                    sig_data = {'chain': chain, 'token_address': token_address, 'pool_address': pool_address,
-                                'token_name': token_name, 'entry_price': entry_price, 'signal_type': 'FAST', **targets}
-                    
-                    text = format_signal_text(sig_data, "ACTIVE", audit_msg)
-                    keyboard = build_keyboard(chain, token_address, pool_address, token_name, audit_msg)
-                    msg_id = send_telegram_message(text, keyboard)
-                    
-                    if msg_id:
-                        sig_data['tg_msg_id'] = msg_id
-                        if save_signal(sig_data):
-                            found_fast += 1
-                else:  # PULLBACK
-                    watchlist_data = {'chain': chain, 'token_address': token_address, 'pool_address': pool_address,
-                                      'token_name': token_name, 'peak_price': entry_price}
-                    if add_to_watchlist(watchlist_data):
-                        added_watchlist += 1
-                time.sleep(1)
+                targets = calculate_targets(entry_price)
+                sig_data = {'chain': chain, 'token_address': token_address, 'pool_address': pool_address,
+                            'token_name': token_name, 'entry_price': entry_price, 'signal_type': 'FAST', **targets}
+                
+                text = format_signal_text(sig_data, "ACTIVE", audit_msg)
+                keyboard = build_keyboard(chain, token_address, pool_address, token_name, audit_msg)
+                msg_id = send_telegram_message(text, keyboard)
+                
+                if msg_id:
+                    sig_data['tg_msg_id'] = msg_id
+                    if save_signal(sig_data):
+                        found_fast += 1
+                        logging.info(f"📤 [SIGNAL] {token_name} ({chain}): SENT to channel (msg_id={msg_id})")
+            else:
+                logging.info(f"🎯 [CLASSIFY] {token_name} ({chain}): PULLBACK CANDIDATE (24h change >80%, waiting for dip)")
+                watchlist_data = {'chain': chain, 'token_address': token_address, 'pool_address': pool_address,
+                                  'token_name': token_name, 'peak_price': entry_price}
+                if add_to_watchlist(watchlist_data):
+                    added_watchlist += 1
+                    logging.info(f"📋 [WATCHLIST] {token_name} ({chain}): Added to pullback monitor (peak=${entry_price:.8f})")
+            
+            time.sleep(1)
     
-    send_admin_log(f"✅ <b>Scan Complete:</b> {found_fast} FAST signals sent | {added_watchlist} added to watchlist")
-
+    # Summary log
+    summary = (
+        f"✅ [SCAN COMPLETE] "
+        f"Scanned={total_scanned} | "
+        f"Passed={passed_basic} | "
+        f"FAST Sent={found_fast} | "
+        f"Watchlist={added_watchlist} | "
+        f"Rejected: Age={rejected_reasons['age']} "
+        f"Liq={rejected_reasons['liquidity']} "
+        f"Vol={rejected_reasons['volume']} "
+        f"FDV={rejected_reasons['fdv']} "
+        f"Momentum={rejected_reasons['momentum']} "
+        f"Dup={rejected_reasons['duplicate']} "
+        f"Audit={rejected_reasons['audit_failed']}"
+    )
+    logging.info(summary)
+    send_admin_log(f"📊 <b>Scan Summary:</b>\n{summary}")
+    
 def job_monitor_watchlist():
     watchlist = get_watchlist()
     if not watchlist: return
@@ -401,6 +483,60 @@ def job_monitor_signals():
             keyboard = build_keyboard(sig['chain'], sig['token_address'], sig['pool_address'], sig['token_name'], "")
             edit_telegram_message(sig['tg_msg_id'], updated_text, keyboard)
             update_signal_status(sig['id'], new_status)
+            # Tambah chart screenshot bila TP kena
+        if "TP1" in new_status or "TP2" in new_status or "TP3" in new_status:
+            chart_url = generate_chart_screenshot(
+                sig['token_name'],
+                sig['chain'],
+                sig['entry_price'],
+                sig['tp1'],
+                sig['tp2'],
+                sig['tp3']
+             )
+             updated_text += f"\n📊 <b>CHART:</b> {chart_url}"
+
+def generate_chart_screenshot(token_name, chain, entry, tp1, tp2, tp3):
+    """Generate TradingView chart screenshot with JEBAT watermark"""
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
+    from webdriver_manager.chrome import ChromeDriverManager
+    from PIL import Image, ImageDraw, ImageFont
+    import time
+    import os
+    
+    # 1. Setup headless browser
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1920,1080")
+    
+    driver = webdriver.Chrome(
+        service=Service(ChromeDriverManager().install()),
+        options=chrome_options
+    )
+    
+    # 2. Buka TradingView chart
+    chart_url = f"https://tradingview.com/charts/{token_name}?theme=dark"
+    driver.get(chart_url)
+    time.sleep(5)  # Tunggu chart load
+    
+    # 3. Screenshot & add watermark
+    screenshot_path = "/tmp/chart.png"
+    driver.save_screenshot(screenshot_path)
+    
+    img = Image.open(screenshot_path)
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.load_default()
+    
+    # Tambah watermark "JEBAT" di bawah
+    draw.text((50, img.height - 40), "JEBAT | Institutional Setup", fill="white", font=font)
+    img.save(screenshot_path)
+    
+    # 4. Simpan ke temporary storage
+    img_url = f"https://jebat.onrender.com/charts/{token_name}-{int(time.time())}.png"
+    return img_url
 
 def generate_weekly_report():
     signals = supabase_select("signals", "status", f"created_at=gt.{(datetime.now(timezone.utc) - timedelta(days=7)).isoformat()}")
