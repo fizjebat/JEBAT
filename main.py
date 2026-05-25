@@ -29,34 +29,119 @@ HEADERS = {
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # ==========================================
+# 🚨 ERROR ESCALATION SYSTEM
+# ==========================================
+_error_counter = {
+    'supabase': 0,
+    'telegram': 0,
+    'geckoterminal': 0,
+    'dexscreener': 0,
+    'audit': 0,
+    'last_report': datetime.now(timezone.utc)
+}
+
+def report_error(tier, source, message, details=None):
+    """
+    tier: 'CRITICAL', 'WARNING', 'SILENT'
+    source: 'supabase', 'telegram', 'geckoterminal', etc.
+    """
+    # 1. Always log to Render console
+    log_msg = f"🚨 [{tier}] {source}: {message}"
+    if details:
+        log_msg += f" | Details: {details}"
+    
+    if tier == 'CRITICAL':
+        logging.error(log_msg)
+    elif tier == 'WARNING':
+        logging.warning(log_msg)
+    else:
+        logging.info(log_msg)
+    
+    # 2. Track error count
+    if source in _error_counter:
+        _error_counter[source] += 1
+    
+    # 3. CRITICAL errors → Send immediately to Admin
+    if tier == 'CRITICAL':
+        alert_msg = (
+            f"🚨 <b>JEBAT | CRITICAL ERROR</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ <b>Source:</b> {source.upper()}\n"
+            f"💬 <b>Issue:</b> {message}\n"
+        )
+        if details:
+            alert_msg += f"🔍 <b>Details:</b> <code>{str(details)[:200]}</code>\n"
+        alert_msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+        alert_msg += f"<i>⏰ {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}</i>"
+        
+        # Send without using send_admin_log to avoid infinite loop
+        if TELEGRAM_BOT_TOKEN and ADMIN_CHAT_ID:
+            try:
+                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+                payload = {'chat_id': ADMIN_CHAT_ID, 'text': alert_msg, 'parse_mode': 'HTML'}
+                requests.post(url, data=payload, timeout=5)
+            except:
+                pass
+    
+    # 4. WARNING errors → Batch every hour
+    elif tier == 'WARNING':
+        now = datetime.now(timezone.utc)
+        if (now - _error_counter['last_report']).total_seconds() > 3600:  # 1 hour
+            send_error_summary()
+            # Reset counters
+            for key in _error_counter:
+                if key != 'last_report':
+                    _error_counter[key] = 0
+            _error_counter['last_report'] = now
+
+def send_error_summary():
+    """Send hourly batch summary of warnings"""
+    total_errors = sum(v for k, v in _error_counter.items() if k != 'last_report')
+    if total_errors == 0:
+        return
+    
+    summary = f"⚠️ <b>JEBAT | Hourly Error Summary</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+    for source, count in _error_counter.items():
+        if source != 'last_report' and count > 0:
+            summary += f"• <b>{source.upper()}:</b> {count} issues\n"
+    summary += f"━━━━━━━━━━━━━━━━━━━━\n<i>System still operational. Monitoring...</i>"
+    
+    send_admin_log(summary)
+# ==========================================
 # 🗄️ SUPABASE REST API WRAPPERS
 # ==========================================
 def supabase_insert(table, data):
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     try:
         resp = requests.post(url, headers=HEADERS, json=data, timeout=10)
-        return resp.status_code in [201, 204]
+        if resp.status_code in [201, 204]:
+            return True
+        else:
+            report_error('CRITICAL', 'supabase', f'Insert failed to {table}', 
+                        f'Status: {resp.status_code} | {resp.text[:100]}')
+            return False
     except Exception as e:
-        logging.error(f"Supabase insert error: {e}")
+        report_error('CRITICAL', 'supabase', f'Database connection failed', str(e))
         return False
 
 def supabase_select(table, columns="*", params=None):
     url = f"{SUPABASE_URL}/rest/v1/{table}?select={columns}"
     if params:
-        # Handle both dict and string params
         if isinstance(params, dict):
             for k, v in params.items():
                 url += f"&{k}={v}"
         elif isinstance(params, str):
-            # If params is already a query string, append directly
             url += f"&{params}"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10)
         if resp.status_code == 200:
             return resp.json()
-        return []
+        else:
+            report_error('WARNING', 'supabase', f'Select failed from {table}', 
+                        f'Status: {resp.status_code}')
+            return []
     except Exception as e:
-        logging.error(f"Supabase select error: {e}")
+        report_error('CRITICAL', 'supabase', f'Database query failed', str(e))
         return []
 
 def supabase_update(table, data, filters):
@@ -85,14 +170,22 @@ def supabase_delete(table, filters):
 # 📡 PERISIKAN (API CALLS)
 # ==========================================
 def fetch_new_pools(chain):
-    url = f"https://api.geckoterminal.com/api/v2/networks/{chain}/new_pools"
+    url = f"https://api.geckoterminal.com/api/v2/networks/{chain}/pools"
+    params = {'sort': 'h24_volume_usd_desc', 'page': 1}
     try:
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, params=params, timeout=10)
         if resp.status_code == 200:
             return resp.json().get('data', [])
+        elif resp.status_code == 429:
+            report_error('WARNING', 'geckoterminal', f'Rate limit hit on {chain}')
+            return []
+        else:
+            report_error('WARNING', 'geckoterminal', f'API error on {chain}', 
+                        f'Status: {resp.status_code}')
+            return []
     except Exception as e:
-        send_admin_log(f"⚠️ <b>API Error:</b> Failed to fetch {chain}. {e}")
-    return []
+        report_error('CRITICAL', 'geckoterminal', f'Failed to fetch {chain}', str(e))
+        return []
 
 def fetch_current_prices(token_addresses):
     if not token_addresses: return {}
@@ -275,8 +368,13 @@ def send_telegram_message(text, reply_markup=None):
     if reply_markup: payload['reply_markup'] = json.dumps(reply_markup)
     try:
         resp = requests.post(url, data=payload, timeout=10)
-        if resp.status_code == 200: return resp.json()['result']['message_id']
-    except Exception as e: logging.error(f"TG Send Exception: {e}")
+        if resp.status_code == 200: 
+            return resp.json()['result']['message_id']
+        else:
+            report_error('CRITICAL', 'telegram', f'Failed to send message to channel', 
+                        f'Status: {resp.status_code} | {resp.text[:100]}')
+    except Exception as e: 
+        report_error('CRITICAL', 'telegram', 'Telegram API connection failed', str(e))
     return None
 
 def edit_telegram_message(msg_id, text, reply_markup=None):
@@ -607,6 +705,44 @@ def health():
         "scheduler": "running" if _scheduler_started else "not_started",
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
+
+@app.route('/status')
+def status():
+    """Full system status - boleh bookmark di phone"""
+    active = len(supabase_select("signals", "id", "status=eq.ACTIVE"))
+    watchlist = len(supabase_select("watchlist", "id"))
+    
+    # Test Supabase
+    try:
+        resp = requests.get(f"{SUPABASE_URL}/rest/v1/signals?select=count", headers=HEADERS, timeout=5)
+        db_status = "✅ Online" if resp.status_code == 200 else "❌ Error"
+    except:
+        db_status = "❌ Offline"
+    
+    # Test GeckoTerminal
+    try:
+        resp = requests.get("https://api.geckoterminal.com/api/v2/networks/solana/pools?page=1", timeout=5)
+        api_status = "✅ Online" if resp.status_code == 200 else "❌ Error"
+    except:
+        api_status = "❌ Offline"
+    
+    status_text = (
+        f"🎯 <b>JEBAT | SYSTEM STATUS</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🟢 <b>Bot:</b> Active\n"
+        f"{db_status} <b>Database:</b> Supabase\n"
+        f"{api_status} <b>Scanner:</b> GeckoTerminal\n\n"
+        f"📊 <b>Live Stats:</b>\n"
+        f"• Active Signals: {active}\n"
+        f"• Watchlist: {watchlist}\n"
+        f"• Uptime: Since last deploy\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+    )
+    
+    # Send to admin
+    send_admin_log(status_text)
+    return "Status sent to admin chat"
 
 @app.route('/test-telegram')
 def test_telegram():
