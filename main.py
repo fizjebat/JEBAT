@@ -146,7 +146,8 @@ def supabase_select(table, columns="*", params=None):
 
 def supabase_update(table, data, filters):
     url = f"{SUPABASE_URL}/rest/v1/{table}"
-    filter_str = "&".join([f"{k}=eq.{v}" for k, v in filters.items()])
+    # Callers pass values dengan prefix "eq." — jangan tambah lagi atau jadi id=eq.eq.{val}
+    filter_str = "&".join([f"{k}={v}" for k, v in filters.items()])
     url += f"?{filter_str}"
     try:
         resp = requests.patch(url, headers=HEADERS, json=data, timeout=10)
@@ -157,7 +158,8 @@ def supabase_update(table, data, filters):
 
 def supabase_delete(table, filters):
     url = f"{SUPABASE_URL}/rest/v1/{table}"
-    filter_str = "&".join([f"{k}=eq.{v}" for k, v in filters.items()])
+    # Callers pass values dengan prefix "eq." — jangan tambah lagi atau jadi id=eq.eq.{val}
+    filter_str = "&".join([f"{k}={v}" for k, v in filters.items()])
     url += f"?{filter_str}"
     try:
         resp = requests.delete(url, headers=HEADERS, timeout=10)
@@ -179,9 +181,17 @@ def fetch_new_pools(chain, max_retries=3):
         try:
             resp = requests.get(url, params=params, headers=headers, timeout=15)
             
-            # ✅ Handle Rate Limit (429) dengan backoff
+            # ✅ Handle Rate Limit (429) dengan exponential backoff
+            # Formula: wait = max(Retry-After header, 30 × 2^attempt)
+            # Ini garantikan minimum wait walaupun GeckoTerminal hantar Retry-After: 0
             if resp.status_code == 429:
-                wait_time = int(resp.headers.get("Retry-After", 30 * (attempt + 1)))
+                # Exponential backoff: attempt 0→30s, 1→60s, 2→120s
+                base_backoff = 30 * (2 ** attempt)
+                try:
+                    header_val = int(resp.headers.get("Retry-After", 0))
+                except (ValueError, TypeError):
+                    header_val = 0
+                wait_time = max(header_val, base_backoff)
                 report_error('WARNING', 'geckoterminal', 
                             f'Rate limit on {chain} — waiting {wait_time}s (attempt {attempt+1}/{max_retries})')
                 time.sleep(wait_time)
@@ -626,7 +636,9 @@ def job_monitor_watchlist():
                 remove_from_watchlist(w['id'])
                 continue
             
-            targets = calculate_targets(current_price)
+            # ATR estimate: 20% of current price (konsisten dengan job_scan_market)
+            atr_estimate = current_price * 0.20
+            targets = calculate_targets(current_price, atr_estimate)
             sig_data = {'chain': w['chain'], 'token_address': w['token_address'], 'pool_address': w['pool_address'],
                         'token_name': w['token_name'], 'entry_price': current_price, 'signal_type': 'PULLBACK', **targets}
             
