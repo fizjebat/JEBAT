@@ -480,63 +480,28 @@ def job_monitor_signals():
         elif current_price >= sig['tp1'] and sig['status'] == 'ACTIVE': new_status = "HIT_TP1"
         if new_status != sig['status']:
             updated_text = format_signal_text(sig, new_status)
-            keyboard = build_keyboard(sig['chain'], sig['token_address'], sig['pool_address'], sig['token_name'], "")
-            edit_telegram_message(sig['tg_msg_id'], updated_text, keyboard)
-            update_signal_status(sig['id'], new_status)
-            # Tambah chart screenshot bila TP kena
-        if "TP1" in new_status or "TP2" in new_status or "TP3" in new_status:
-            chart_url = generate_chart_screenshot(
-                sig['token_name'],
-                sig['chain'],
-                sig['entry_price'],
-                sig['tp1'],
-                sig['tp2'],
-                sig['tp3']
-             )
-             updated_text += f"\n📊 <b>CHART:</b> {chart_url}"
+    
+            # Tambah chart link bila TP kena
+            if "TP1" in new_status or "TP2" in new_status or "TP3" in new_status:
+            chart_link = generate_chart_url(sig['token_name'], sig['chain'])
+            updated_text += f"\n\n📊 <b>CHART:</b> <a href='{chart_link}'>Buka Chart Live</a>"
+    
+        keyboard = build_keyboard(sig['chain'], sig['token_address'], sig['pool_address'], sig['token_name'], "")
+        edit_telegram_message(sig['tg_msg_id'], updated_text, keyboard)
+        update_signal_status(sig['id'], new_status)
 
-def generate_chart_screenshot(token_name, chain, entry, tp1, tp2, tp3):
-    """Generate TradingView chart screenshot with JEBAT watermark"""
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.chrome.service import Service
-    from webdriver_manager.chrome import ChromeDriverManager
-    from PIL import Image, ImageDraw, ImageFont
-    import time
-    import os
+def generate_chart_url(token_symbol, chain):
+    """Generate TradingView lightweight chart link - No Selenium/Pillow needed"""
+    # Mapping chain ke format TradingView
+    chain_map = {
+        'solana': 'SOLANA',
+        'base': 'BASE',
+        'bsc': 'BSC'
+    }
+    exchange = chain_map.get(chain.lower(), 'CRYPTO')
     
-    # 1. Setup headless browser
-    chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--window-size=1920,1080")
-    
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()),
-        options=chrome_options
-    )
-    
-    # 2. Buka TradingView chart
-    chart_url = f"https://tradingview.com/charts/{token_name}?theme=dark"
-    driver.get(chart_url)
-    time.sleep(5)  # Tunggu chart load
-    
-    # 3. Screenshot & add watermark
-    screenshot_path = "/tmp/chart.png"
-    driver.save_screenshot(screenshot_path)
-    
-    img = Image.open(screenshot_path)
-    draw = ImageDraw.Draw(img)
-    font = ImageFont.load_default()
-    
-    # Tambah watermark "JEBAT" di bawah
-    draw.text((50, img.height - 40), "JEBAT | Institutional Setup", fill="white", font=font)
-    img.save(screenshot_path)
-    
-    # 4. Simpan ke temporary storage
-    img_url = f"https://jebat.onrender.com/charts/{token_name}-{int(time.time())}.png"
-    return img_url
+    # Return direct link ke TradingView chart widget
+    return f"https://www.tradingview.com/chart/?symbol={exchange}:{token_symbol.upper()}"
 
 def generate_weekly_report():
     signals = supabase_select("signals", "status", f"created_at=gt.{(datetime.now(timezone.utc) - timedelta(days=7)).isoformat()}")
