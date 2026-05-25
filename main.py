@@ -736,38 +736,27 @@ def job_scan_market():
             signal_type = classify_signal_type(pool)
             
             # ✅ FIX INDENTATION: 'if' ini WAJIB berada di DALAM loop 'for pool'
-            if signal_type == 'FAST':
-                logging.info(f"⚡ [CLASSIFY] {token_name}: FAST BREAKOUT")
-                audit_passed, audit_msg = auto_audit_token(chain, token_address)
-                
-                if not audit_passed:
-                    rejected_reasons['audit_failed'] += 1
-                    logging.warning(f"🗑️ [AUDIT] {token_name}: FAILED - {audit_msg}")
-                    continue
-
-                atr_estimate = entry_price * 0.20
-                targets = calculate_targets(entry_price, atr_estimate) 
-
-            # Extract security metrics
-            security_metrics = extract_security_metrics(chain, token_address, pool)
+        if signal_type == 'FAST':
+            logging.info(f"⚡ [CLASSIFY] {token_name}: FAST BREAKOUT")
+            audit_passed, audit_msg = auto_audit_token(chain, token_address)
             
-            # SKIP signal jika score < 60 (RED light)
-            if security_metrics['score'] < 60:
+            if not audit_passed:
                 rejected_reasons['audit_failed'] += 1
-                logging.warning(f"🔴 [SECURITY] {token_name}: SKIPPED (score {security_metrics['score']}/100)")
+                logging.warning(f"🗑️ [AUDIT] {token_name}: FAILED - {audit_msg}")
                 continue
+
+            atr_estimate = entry_price * 0.20
+            targets = calculate_targets(entry_price, atr_estimate)
             
-            sig_data['security'] = security_metrics
-                
-                sig_data = {
-                    'chain': chain, 
-                    'token_address': token_address,
-                    'pool_address': pool_address, 
-                    'token_name': token_name,
-                    'entry_price': entry_price, 
-                    'signal_type': 'FAST', 
-                    **targets
-                }
+            sig_data = {
+                'chain': chain,
+                'token_address': token_address,
+                'pool_address': pool_address,
+                'token_name': token_name,
+                'entry_price': entry_price,
+                'signal_type': 'FAST',
+                **targets
+            }
                 
                 text = format_signal_text(sig_data, "ACTIVE", audit_msg)
                 keyboard = build_keyboard(chain, token_address, pool_address, token_name, audit_msg)
