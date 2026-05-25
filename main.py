@@ -472,17 +472,14 @@ def get_btc_trend():
 def job_scan_market():
     # Check BTC regime FIRST
     btc_bullish = get_btc_trend()
-    
     if not btc_bullish:
         logging.warning("🐻 [MACRO] BTC BEARISH - Skipping scan to protect capital")
         send_admin_log("🐻 <b>JEBAT | Macro Filter Active</b>\nBTC below EMA50 (Bearish regime).\nScanner paused to avoid low-probability setups.")
         return
-    
+
     logging.info("🐂 [MACRO] BTC BULLISH - Proceeding with scan")
-    
-    # ... [rest of existing scan code] ...
     logging.info("🔍 [SCAN] Starting market scan cycle")
-    
+
     total_scanned = 0
     passed_basic = 0
     rejected_reasons = {
@@ -491,12 +488,12 @@ def job_scan_market():
     }
     found_fast = 0
     added_watchlist = 0
-    
-        for chain in TARGET_CHAINS:
+
+    for chain in TARGET_CHAINS:
         pools = fetch_new_pools(chain)
         logging.info(f"📡 [SCAN] {chain.upper()}: Fetched {len(pools)} pools")
         
-        # ✅ VALIDATION: Skip chain jika tiada data
+        # ✅ VALIDATION: Skip chain jika tiada data (elak error downstream)
         if not pools:
             logging.warning(f"⚠️ [SKIP] {chain.upper()}: Tiada data — chain ini diabaikan")
             continue
@@ -595,7 +592,7 @@ def job_scan_market():
                     logging.info(f"📋 [WATCHLIST] {token_name}: Added (peak=${entry_price:.8f})")
             
             time.sleep(1)
-    
+
     summary = (
         f"✅ [SCAN COMPLETE] Scanned={total_scanned} | Passed={passed_basic} | "
         f"FAST Sent={found_fast} | Watchlist={added_watchlist} | "
