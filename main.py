@@ -464,7 +464,8 @@ def job_scan_market():
             logging.info(f"✅ [FILTER] {token_name} ({chain}): PASSED basic filter | Liq=${liq:,.0f} Vol=${vol_h24:,.0f} FDV=${fdv:,.0f}")
             
             # Check duplicate
-            existing = supabase_select("signals", "id", f"token_address=eq.{token_address}&created_at=gt.{(datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()}")
+            time_24h_ago = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime('%Y-%m-%dT%H:%M:%SZ')
+existing = supabase_select("signals", "id", f"token_address=eq.{token_address}&created_at=gt.{time_24h_ago}")
             if existing:
                 rejected_reasons['duplicate'] += 1
                 logging.info(f"⏭️ [SKIP] {token_name} ({chain}): Already sent in last 24h")
