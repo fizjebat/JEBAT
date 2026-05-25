@@ -400,7 +400,7 @@ def format_signal_text(sig_data, status="ACTIVE", audit_status=""):
 
     audit_badge = f"🛡️ <b>AUTO-AUDIT:</b> ✅ {audit_status}" if audit_status else ""
     text = (
-        f"🎯 <b>GHOST SNIPER | {chain.upper()}</b> {chain_emoji}\n"
+        f"🎯 <b>JEBAT | {chain.upper()}</b> {chain_emoji}\n"
         f"{type_badge}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🪙 <b>{sig_data['token_name']}</b>\n\n"
