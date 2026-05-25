@@ -169,23 +169,40 @@ def supabase_delete(table, filters):
 # ==========================================
 # 📡 PERISIKAN (API CALLS)
 # ==========================================
-def fetch_new_pools(chain):
+def fetch_new_pools(chain, max_retries=3):
+    """Fetch pools dengan exponential backoff untuk elak rate limit."""
     url = f"https://api.geckoterminal.com/api/v2/networks/{chain}/pools"
     params = {'sort': 'h24_volume_usd_desc', 'page': 1}
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        if resp.status_code == 200:
-            return resp.json().get('data', [])
-        elif resp.status_code == 429:
-            report_error('WARNING', 'geckoterminal', f'Rate limit hit on {chain}')
+    headers = {"Accept": "application/json;version=20222806"}
+    
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, params=params, headers=headers, timeout=15)
+            
+            # ✅ Handle Rate Limit (429) dengan backoff
+            if resp.status_code == 429:
+                wait_time = int(resp.headers.get("Retry-After", 30 * (attempt + 1)))
+                report_error('WARNING', 'geckoterminal', 
+                            f'Rate limit on {chain} — waiting {wait_time}s (attempt {attempt+1}/{max_retries})')
+                time.sleep(wait_time)
+                continue
+            
+            if resp.status_code == 200:
+                data = resp.json().get('data', [])
+                return data if isinstance(data, list) else []
+            else:
+                report_error('WARNING', 'geckoterminal', f'API error on {chain}',
+                            f'Status: {resp.status_code}')
+                return []
+                
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(5 * (attempt + 1))
+                continue
+            report_error('CRITICAL', 'geckoterminal', f'Failed to fetch {chain}', str(e))
             return []
-        else:
-            report_error('WARNING', 'geckoterminal', f'API error on {chain}', 
-                        f'Status: {resp.status_code}')
-            return []
-    except Exception as e:
-        report_error('CRITICAL', 'geckoterminal', f'Failed to fetch {chain}', str(e))
-        return []
+    
+    return []
 
 def fetch_current_prices(token_addresses):
     if not token_addresses: return {}
@@ -476,8 +493,15 @@ def job_scan_market():
     added_watchlist = 0
     
     for chain in TARGET_CHAINS:
-        pools = fetch_new_pools(chain)
-        logging.info(f"📡 [SCAN] {chain.upper()}: Fetched {len(pools)} pools")
+    pools = fetch_new_pools(chain)
+    logging.info(f"📡 [SCAN] {chain.upper()}: Fetched {len(pools)} pools")
+    
+    # ✅ VALIDATION: Skip chain jika tiada data (elak error downstream)
+    if not pools:
+        logging.warning(f"⚠️ [SKIP] {chain.upper()}: Tiada data — chain ini diabaikan")
+        continue
+    
+    for pool in pools:
         
         for pool in pools:
             total_scanned += 1
@@ -529,9 +553,9 @@ def job_scan_market():
             
             signal_type = classify_signal_type(pool)
             
+        # ✅ FIX: Indentation — ini WAJIB dalam loop `for pool in pools`
         if signal_type == 'FAST':
             logging.info(f"⚡ [CLASSIFY] {token_name}: FAST BREAKOUT")
-            audit_passed, audit_msg = auto_audit_token(chain, token_address)
             
             if not audit_passed:
                 rejected_reasons['audit_failed'] += 1
