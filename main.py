@@ -395,19 +395,13 @@ def send_admin_log(text):
 # ⚙️ CRON JOBS
 # ==========================================
 def job_scan_market():
-    send_admin_log("🔍 <b>System:</b> Starting market scan...")
     logging.info("🔍 [SCAN] Starting market scan cycle")
     
     total_scanned = 0
     passed_basic = 0
     rejected_reasons = {
-        'age': 0,
-        'liquidity': 0,
-        'volume': 0,
-        'fdv': 0,
-        'momentum': 0,
-        'duplicate': 0,
-        'audit_failed': 0
+        'age': 0, 'liquidity': 0, 'volume': 0,
+        'fdv': 0, 'momentum': 0, 'duplicate': 0, 'audit_failed': 0
     }
     found_fast = 0
     added_watchlist = 0
@@ -421,7 +415,6 @@ def job_scan_market():
             attrs = pool['attributes']
             token_name = attrs.get('name', 'Unknown').split(' / ')[0]
             
-            # Detailed filter logging
             created_at = datetime.fromisoformat(attrs['pool_created_at'].replace('Z', '+00:00'))
             age_hours = (datetime.now(timezone.utc) - created_at).total_seconds() / 3600
             liq = float(attrs.get('reserve_in_usd', 0))
@@ -430,30 +423,24 @@ def job_scan_market():
             h1_change = float(attrs.get('price_change_percentage', {}).get('h1', 0))
             h1_buys = int(attrs.get('transactions', {}).get('h1', {}).get('buys', 0))
             
-            # Check each filter individually with logging
             if not (2 <= age_hours <= 168):
                 rejected_reasons['age'] += 1
-                logging.debug(f"❌ [FILTER] {token_name} ({chain}): REJECTED - Age {age_hours:.1f}h (need 2-168h)")
                 continue
             
             if liq < 30000:
                 rejected_reasons['liquidity'] += 1
-                logging.debug(f"❌ [FILTER] {token_name} ({chain}): REJECTED - Liquidity ${liq:,.0f} (need >$30k)")
                 continue
             
             if vol_h24 < 100000:
                 rejected_reasons['volume'] += 1
-                logging.debug(f"❌ [FILTER] {token_name} ({chain}): REJECTED - Volume ${vol_h24:,.0f} (need >$100k)")
                 continue
             
             if not (50000 <= fdv <= 5000000):
                 rejected_reasons['fdv'] += 1
-                logging.debug(f"❌ [FILTER] {token_name} ({chain}): REJECTED - FDV ${fdv:,.0f} (need $50k-$5M)")
                 continue
             
             if h1_change <= 0 or h1_buys < 50:
                 rejected_reasons['momentum'] += 1
-                logging.debug(f"❌ [FILTER] {token_name} ({chain}): REJECTED - Momentum {h1_change:+.1f}% / {h1_buys} buys")
                 continue
             
             passed_basic += 1
@@ -461,33 +448,33 @@ def job_scan_market():
             pool_address = pool['id'].split('_')[1]
             entry_price = float(attrs['base_token_price_usd'])
             
-            logging.info(f"✅ [FILTER] {token_name} ({chain}): PASSED basic filter | Liq=${liq:,.0f} Vol=${vol_h24:,.0f} FDV=${fdv:,.0f}")
+            logging.info(f"✅ [FILTER] {token_name} ({chain}): PASSED | Liq=${liq:,.0f} Vol=${vol_h24:,.0f} FDV=${fdv:,.0f}")
             
-            # Check duplicate
             time_24h_ago = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime('%Y-%m-%dT%H:%M:%SZ')
-existing = supabase_select("signals", "id", f"token_address=eq.{token_address}&created_at=gt.{time_24h_ago}")
+            existing = supabase_select("signals", "id", f"token_address=eq.{token_address}&created_at=gt.{time_24h_ago}")
+            
             if existing:
                 rejected_reasons['duplicate'] += 1
-                logging.info(f"⏭️ [SKIP] {token_name} ({chain}): Already sent in last 24h")
+                logging.info(f"⏭️ [SKIP] {token_name}: Already sent in 24h")
                 continue
             
             signal_type = classify_signal_type(pool)
             
             if signal_type == 'FAST':
-                logging.info(f"⚡ [CLASSIFY] {token_name} ({chain}): FAST BREAKOUT (24h change <80%)")
+                logging.info(f"⚡ [CLASSIFY] {token_name}: FAST BREAKOUT")
                 audit_passed, audit_msg = auto_audit_token(chain, token_address)
                 
                 if not audit_passed:
                     rejected_reasons['audit_failed'] += 1
-                    logging.warning(f"🗑️ [AUDIT] {token_name} ({chain}): FAILED - {audit_msg}")
-                    send_admin_log(f"🗑️ <b>Rejected:</b> {token_name} ({audit_msg})")
+                    logging.warning(f"🗑️ [AUDIT] {token_name}: FAILED - {audit_msg}")
                     continue
                 
-                logging.info(f"🛡️ [AUDIT] {token_name} ({chain}): PASSED - {audit_msg}")
-                
                 targets = calculate_targets(entry_price)
-                sig_data = {'chain': chain, 'token_address': token_address, 'pool_address': pool_address,
-                            'token_name': token_name, 'entry_price': entry_price, 'signal_type': 'FAST', **targets}
+                sig_data = {
+                    'chain': chain, 'token_address': token_address,
+                    'pool_address': pool_address, 'token_name': token_name,
+                    'entry_price': entry_price, 'signal_type': 'FAST', **targets
+                }
                 
                 text = format_signal_text(sig_data, "ACTIVE", audit_msg)
                 keyboard = build_keyboard(chain, token_address, pool_address, token_name, audit_msg)
@@ -497,34 +484,29 @@ existing = supabase_select("signals", "id", f"token_address=eq.{token_address}&c
                     sig_data['tg_msg_id'] = msg_id
                     if save_signal(sig_data):
                         found_fast += 1
-                        logging.info(f"📤 [SIGNAL] {token_name} ({chain}): SENT to channel (msg_id={msg_id})")
+                        logging.info(f"📤 [SIGNAL] {token_name}: SENT (msg_id={msg_id})")
             else:
-                logging.info(f"🎯 [CLASSIFY] {token_name} ({chain}): PULLBACK CANDIDATE (24h change >80%, waiting for dip)")
-                watchlist_data = {'chain': chain, 'token_address': token_address, 'pool_address': pool_address,
-                                  'token_name': token_name, 'peak_price': entry_price}
+                logging.info(f"🎯 [CLASSIFY] {token_name}: PULLBACK CANDIDATE")
+                watchlist_data = {
+                    'chain': chain, 'token_address': token_address,
+                    'pool_address': pool_address, 'token_name': token_name,
+                    'peak_price': entry_price
+                }
                 if add_to_watchlist(watchlist_data):
                     added_watchlist += 1
-                    logging.info(f"📋 [WATCHLIST] {token_name} ({chain}): Added to pullback monitor (peak=${entry_price:.8f})")
+                    logging.info(f"📋 [WATCHLIST] {token_name}: Added (peak=${entry_price:.8f})")
             
             time.sleep(1)
     
-    # Summary log
     summary = (
-        f"✅ [SCAN COMPLETE] "
-        f"Scanned={total_scanned} | "
-        f"Passed={passed_basic} | "
-        f"FAST Sent={found_fast} | "
-        f"Watchlist={added_watchlist} | "
-        f"Rejected: Age={rejected_reasons['age']} "
-        f"Liq={rejected_reasons['liquidity']} "
-        f"Vol={rejected_reasons['volume']} "
-        f"FDV={rejected_reasons['fdv']} "
-        f"Momentum={rejected_reasons['momentum']} "
-        f"Dup={rejected_reasons['duplicate']} "
+        f"✅ [SCAN COMPLETE] Scanned={total_scanned} | Passed={passed_basic} | "
+        f"FAST Sent={found_fast} | Watchlist={added_watchlist} | "
+        f"Rejected: Age={rejected_reasons['age']} Liq={rejected_reasons['liquidity']} "
+        f"Vol={rejected_reasons['volume']} FDV={rejected_reasons['fdv']} "
+        f"Momentum={rejected_reasons['momentum']} Dup={rejected_reasons['duplicate']} "
         f"Audit={rejected_reasons['audit_failed']}"
     )
     logging.info(summary)
-    send_admin_log(f"📊 <b>Scan Summary:</b>\n{summary}")
     
 def job_monitor_watchlist():
     watchlist = get_watchlist()
