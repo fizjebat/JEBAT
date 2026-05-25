@@ -254,6 +254,171 @@ def auto_audit_token(chain, token_address):
         return False, f"Audit API Error: {e}"
     return False, "Audit: Unknown chain"
 
+def extract_security_metrics(chain, token_address, pool_data):
+    """Extract security data dari RugCheck/TokenSniffer + DexScreener"""
+    metrics = {
+        'lp_locked_pct': 0,
+        'lp_locked_usd': 0,
+        'top10_pct': 0,
+        'age_hours': 0,
+        'is_honeypot': False,
+        'mint_active': False,
+        'freeze_active': False,
+        'score': 0,
+        'light': '🔴'
+    }
+    
+    try:
+        # Token Age dari pool_data
+        if 'pool_created_at' in pool_data.get('attributes', {}):
+            created = datetime.fromisoformat(
+                pool_data['attributes']['pool_created_at'].replace('Z', '+00:00')
+            )
+            metrics['age_hours'] = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+        
+        # LP dari pool_data
+        liq_usd = float(pool_data.get('attributes', {}).get('reserve_in_usd', 0))
+        metrics['lp_locked_usd'] = liq_usd
+        
+        # Fetch detailed audit
+        if chain == 'solana':
+            url = f"https://api.rugcheck.xyz/v1/tokens/{token_address}/report/summary"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                metrics['lp_locked_pct'] = data.get('lpLockedPct', 0)
+                metrics['top10_pct'] = data.get('top10HoldersPct', 0)
+                metrics['mint_active'] = data.get('mintAuthority', None) is not None
+                metrics['freeze_active'] = data.get('freezeAuthority', None) is not None
+        
+        elif chain in ['base', 'bsc']:
+            url = f"https://tokensniffer.com/api/v2/tokens/{chain}/{token_address}"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                metrics['is_honeypot'] = data.get('isHoneypot', False)
+                metrics['top10_pct'] = data.get('topHolders', {}).get('percentage', 0)
+                metrics['lp_locked_pct'] = 100 if data.get('lpLocked', False) else 0
+        
+        # Calculate Score
+        metrics['score'] = calculate_risk_score(metrics, pool_data)
+        
+        # Determine Light
+        if metrics['score'] >= 80:
+            metrics['light'] = '🟢'
+        elif metrics['score'] >= 60:
+            metrics['light'] = '🟡'
+        else:
+            metrics['light'] = '🔴'
+    
+    except Exception as e:
+        logging.error(f"Security extract error: {e}")
+    
+    return metrics
+
+def calculate_risk_score(audit_data, pool_data):
+    """
+    Score 0-100. >= 80 = GREEN, 60-79 = YELLOW, <60 = RED (skip)
+    """
+    score = 100
+    
+    # LP Lock Check (paling kritikal)
+    lp_locked_pct = audit_data.get('lp_locked_pct', 0)
+    if lp_locked_pct < 50:
+        score -= 40  # Critical
+    elif lp_locked_pct < 80:
+        score -= 20  # Warning
+    
+    # Top Holder Concentration
+    top10_pct = audit_data.get('top10_holders_pct', 0)
+    if top10_pct > 50:
+        score -= 35  # Cabal risk
+    elif top10_pct > 30:
+        score -= 15
+    
+    # Mint Authority
+    if audit_data.get('mint_authority_active', False):
+        score -= 20  # Dev boleh print
+    
+    # Freeze Authority
+    if audit_data.get('freeze_authority_active', False):
+        score -= 15
+    
+    # Token Age
+    age_hours = audit_data.get('age_hours', 0)
+    if age_hours < 2:
+        score -= 20  # Too fresh
+    elif age_hours < 6:
+        score -= 5
+    
+    # Honeypot (auto-fail)
+    if audit_data.get('is_honeypot', False):
+        return 0
+    
+    return max(0, min(100, score))
+
+def extract_security_metrics(chain, token_address, pool_data):
+    """Extract security data dari RugCheck/TokenSniffer + DexScreener"""
+    metrics = {
+        'lp_locked_pct': 0,
+        'lp_locked_usd': 0,
+        'top10_pct': 0,
+        'age_hours': 0,
+        'is_honeypot': False,
+        'mint_active': False,
+        'freeze_active': False,
+        'score': 0,
+        'light': '🔴'
+    }
+    
+    try:
+        # Token Age dari pool_data
+        if 'pool_created_at' in pool_data.get('attributes', {}):
+            created = datetime.fromisoformat(
+                pool_data['attributes']['pool_created_at'].replace('Z', '+00:00')
+            )
+            metrics['age_hours'] = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+        
+        # LP dari pool_data
+        liq_usd = float(pool_data.get('attributes', {}).get('reserve_in_usd', 0))
+        metrics['lp_locked_usd'] = liq_usd
+        
+        # Fetch detailed audit
+        if chain == 'solana':
+            url = f"https://api.rugcheck.xyz/v1/tokens/{token_address}/report/summary"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                metrics['lp_locked_pct'] = data.get('lpLockedPct', 0)
+                metrics['top10_pct'] = data.get('top10HoldersPct', 0)
+                metrics['mint_active'] = data.get('mintAuthority', None) is not None
+                metrics['freeze_active'] = data.get('freezeAuthority', None) is not None
+        
+        elif chain in ['base', 'bsc']:
+            url = f"https://tokensniffer.com/api/v2/tokens/{chain}/{token_address}"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                metrics['is_honeypot'] = data.get('isHoneypot', False)
+                metrics['top10_pct'] = data.get('topHolders', {}).get('percentage', 0)
+                metrics['lp_locked_pct'] = 100 if data.get('lpLocked', False) else 0
+        
+        # Calculate Score
+        metrics['score'] = calculate_risk_score(metrics, pool_data)
+        
+        # Determine Light
+        if metrics['score'] >= 80:
+            metrics['light'] = '🟢'
+        elif metrics['score'] >= 60:
+            metrics['light'] = '🟡'
+        else:
+            metrics['light'] = '🔴'
+    
+    except Exception as e:
+        logging.error(f"Security extract error: {e}")
+    
+    return metrics
+
 # ==========================================
 # 🧠 ENJIN TAPIOKAN (FILTER & LOGIC)
 # ==========================================
@@ -398,23 +563,35 @@ def format_signal_text(sig_data, status="ACTIVE", audit_status=""):
     elif status == "CLOSED_TP3": tp1_icon, tp2_icon, tp3_icon, sl_icon = "✅", "✅", "🚀", "🛑"
     elif status == "CLOSED_SL": tp1_icon, tp2_icon, tp3_icon, sl_icon = "❌", "❌", "❌", "💥"
 
-    audit_badge = f"🛡️ <b>AUTO-AUDIT:</b> ✅ {audit_status}" if audit_status else ""
-    text = (
-        f"🎯 <b>JEBAT | {chain.upper()}</b> {chain_emoji}\n"
-        f"{type_badge}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🪙 <b>{sig_data['token_name']}</b>\n\n"
-        f"📈 <b>ENTRY:</b> <code>${sig_data['entry_price']:.8f}</code>\n\n"
-        f"{sl_icon} <b>SL:</b> ${sig_data['sl']:.8f} <i>(-15%)</i>\n"
-        f"{tp1_icon} <b>TP1:</b> ${sig_data['tp1']:.8f} <i>(+30% | 50%)</i>\n"
-        f"{tp2_icon} <b>TP2:</b> ${sig_data['tp2']:.8f} <i>(+80% | 30%)</i>\n"
-        f"{tp3_icon} <b>TP3:</b> ${sig_data['tp3']:.8f} <i>(+200% | Moonbag)</i>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"{audit_badge}\n"
-        f"📋 <b>CA:</b> <code>{sig_data['token_address']}</code>\n"
-        f"<i>💡 Tekan CA untuk copy. Cek Bubblemaps manual untuk cabal detection.</i>"
-    )
-    return text
+        # Security Block (Compact)
+    security = sig_data.get('security', {})
+    if security:
+        lp_pct = security.get('lp_locked_pct', 0)
+        lp_usd = security.get('lp_locked_usd', 0)
+        top10 = security.get('top10_pct', 0)
+        age_h = security.get('age_hours', 0)
+        honeypot = "❌" if security.get('is_honeypot', False) else "✅"
+        mint = "⚠️" if security.get('mint_active', False) else "✅"
+        score = security.get('score', 0)
+        light = security.get('light', '🔴')
+        
+        # Position sizing suggestion
+        if score >= 80:
+            position_advice = "💰 Position: 2-3% portfolio"
+        elif score >= 60:
+            position_advice = "💰 Position: 1% portfolio (cautious)"
+        else:
+            position_advice = "⛔ Position: SKIP (high risk)"
+        
+        security_block = (
+            f"{light} <b>SECURITY ({score}/100)</b>\n"
+            f"🔒 LP: {lp_pct:.0f}% (${lp_usd:,.0f}) • 👥 Top10: {top10:.0f}%\n"
+            f"🕐 Age: {age_h:.0f}h • 🍯 {honeypot} • ✏️ {mint}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"{position_advice}"
+        )
+    else:
+        security_block = "🛡️ <b>Security:</b> Data unavailable"
 
 # ==========================================
 # 🚀 EKSEKUSI TELEGRAM
@@ -570,6 +747,17 @@ def job_scan_market():
 
                 atr_estimate = entry_price * 0.20
                 targets = calculate_targets(entry_price, atr_estimate) 
+
+            # Extract security metrics
+            security_metrics = extract_security_metrics(chain, token_address, pool)
+            
+            # SKIP signal jika score < 60 (RED light)
+            if security_metrics['score'] < 60:
+                rejected_reasons['audit_failed'] += 1
+                logging.warning(f"🔴 [SECURITY] {token_name}: SKIPPED (score {security_metrics['score']}/100)")
+                continue
+            
+            sig_data['security'] = security_metrics
                 
                 sig_data = {
                     'chain': chain, 
