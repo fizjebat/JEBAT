@@ -657,11 +657,10 @@ def get_btc_trend():
         logging.error(f"BTC trend check failed: {e}")
         return True  # Default: allow signals if error
 def job_scan_market():
-    # Check BTC regime FIRST
     btc_bullish = get_btc_trend()
     if not btc_bullish:
-        logging.warning("🐻 [MACRO] BTC BEARISH - Skipping scan to protect capital")
-        send_admin_log("🐻 <b>JEBAT | Macro Filter Active</b>\nBTC below EMA50 (Bearish regime).\nScanner paused to avoid low-probability setups.")
+        logging.warning("🐻 [MACRO] BTC BEARISH - Skipping scan")
+        send_admin_log("🐻 <b>JEBAT | Macro Filter Active</b>\nBTC below EMA50. Scanner paused.")
         return
 
     logging.info("🐂 [MACRO] BTC BULLISH - Proceeding with scan")
@@ -669,10 +668,7 @@ def job_scan_market():
 
     total_scanned = 0
     passed_basic = 0
-    rejected_reasons = {
-        'age': 0, 'liquidity': 0, 'volume': 0,
-        'fdv': 0, 'momentum': 0, 'duplicate': 0, 'audit_failed': 0
-    }
+    rejected_reasons = {'age': 0, 'liquidity': 0, 'volume': 0, 'fdv': 0, 'momentum': 0, 'duplicate': 0, 'audit_failed': 0}
     found_fast = 0
     added_watchlist = 0
 
@@ -680,11 +676,6 @@ def job_scan_market():
         pools = fetch_new_pools(chain)
         logging.info(f"📡 [SCAN] {chain.upper()}: Fetched {len(pools)} pools")
         
-        # ✅ VALIDATION: Skip chain jika tiada data (elak error downstream)
-        if not pools:
-            logging.warning(f"⚠️ [SKIP] {chain.upper()}: Tiada data — chain ini diabaikan")
-            continue
-            
         for pool in pools:
             total_scanned += 1
             attrs = pool['attributes']
@@ -701,19 +692,15 @@ def job_scan_market():
             if not (2 <= age_hours <= 168):
                 rejected_reasons['age'] += 1
                 continue
-            
             if liq < 30000:
                 rejected_reasons['liquidity'] += 1
                 continue
-            
             if vol_h24 < 100000:
                 rejected_reasons['volume'] += 1
                 continue
-            
             if not (50000 <= fdv <= 5000000):
                 rejected_reasons['fdv'] += 1
                 continue
-            
             if h1_change <= 0 or h1_buys < 50:
                 rejected_reasons['momentum'] += 1
                 continue
@@ -723,40 +710,35 @@ def job_scan_market():
             pool_address = pool['id'].split('_')[1]
             entry_price = float(attrs['base_token_price_usd'])
             
-            logging.info(f"✅ [FILTER] {token_name} ({chain}): PASSED | Liq=${liq:,.0f} Vol=${vol_h24:,.0f} FDV=${fdv:,.0f}")
+            logging.info(f"✅ [FILTER] {token_name} ({chain}): PASSED")
             
             time_24h_ago = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime('%Y-%m-%dT%H:%M:%SZ')
             existing = supabase_select("signals", "id", f"token_address=eq.{token_address}&created_at=gt.{time_24h_ago}")
             
             if existing:
                 rejected_reasons['duplicate'] += 1
-                logging.info(f"⏭️ [SKIP] {token_name}: Already sent in 24h")
                 continue
             
             signal_type = classify_signal_type(pool)
             
-            # ✅ FIX INDENTATION: 'if' ini WAJIB berada di DALAM loop 'for pool'
-        if signal_type == 'FAST':
-            logging.info(f"⚡ [CLASSIFY] {token_name}: FAST BREAKOUT")
-            audit_passed, audit_msg = auto_audit_token(chain, token_address)
-            
-            if not audit_passed:
-                rejected_reasons['audit_failed'] += 1
-                logging.warning(f"🗑️ [AUDIT] {token_name}: FAILED - {audit_msg}")
-                continue
+            if signal_type == 'FAST':
+                audit_passed, audit_msg = auto_audit_token(chain, token_address)
+                if not audit_passed:
+                    rejected_reasons['audit_failed'] += 1
+                    continue
 
-            atr_estimate = entry_price * 0.20
-            targets = calculate_targets(entry_price, atr_estimate)
-            
-            sig_data = {
-                'chain': chain,
-                'token_address': token_address,
-                'pool_address': pool_address,
-                'token_name': token_name,
-                'entry_price': entry_price,
-                'signal_type': 'FAST',
-                **targets
-            }
+                atr_estimate = entry_price * 0.20
+                targets = calculate_targets(entry_price, atr_estimate)
+                
+                sig_data = {
+                    'chain': chain, 
+                    'token_address': token_address,
+                    'pool_address': pool_address, 
+                    'token_name': token_name,
+                    'entry_price': entry_price, 
+                    'signal_type': 'FAST', 
+                    **targets
+                }
                 
                 text = format_signal_text(sig_data, "ACTIVE", audit_msg)
                 keyboard = build_keyboard(chain, token_address, pool_address, token_name, audit_msg)
@@ -766,29 +748,28 @@ def job_scan_market():
                     sig_data['tg_msg_id'] = msg_id
                     if save_signal(sig_data):
                         found_fast += 1
-                        logging.info(f"📤 [SIGNAL] {token_name}: SENT (msg_id={msg_id})")
+                        logging.info(f"📤 [SIGNAL] {token_name}: SENT")
             else:
-                logging.info(f"🎯 [CLASSIFY] {token_name}: PULLBACK CANDIDATE")
                 watchlist_data = {
-                    'chain': chain, 'token_address': token_address,
-                    'pool_address': pool_address, 'token_name': token_name,
+                    'chain': chain, 
+                    'token_address': token_address,
+                    'pool_address': pool_address, 
+                    'token_name': token_name,
                     'peak_price': entry_price
                 }
                 if add_to_watchlist(watchlist_data):
                     added_watchlist += 1
-                    logging.info(f"📋 [WATCHLIST] {token_name}: Added (peak=${entry_price:.8f})")
             
             time.sleep(1)
 
-    summary = (
-        f"✅ [SCAN COMPLETE] Scanned={total_scanned} | Passed={passed_basic} | "
-        f"FAST Sent={found_fast} | Watchlist={added_watchlist} | "
-        f"Rejected: Age={rejected_reasons['age']} Liq={rejected_reasons['liquidity']} "
-        f"Vol={rejected_reasons['volume']} FDV={rejected_reasons['fdv']} "
-        f"Momentum={rejected_reasons['momentum']} Dup={rejected_reasons['duplicate']} "
-        f"Audit={rejected_reasons['audit_failed']}"
-    )
+    summary = (f"✅ [SCAN COMPLETE] Scanned={total_scanned} | Passed={passed_basic} | "
+               f"FAST Sent={found_fast} | Watchlist={added_watchlist} | "
+               f"Rejected: Age={rejected_reasons['age']} Liq={rejected_reasons['liquidity']} "
+               f"Vol={rejected_reasons['volume']} FDV={rejected_reasons['fdv']} "
+               f"Momentum={rejected_reasons['momentum']} Dup={rejected_reasons['duplicate']} "
+               f"Audit={rejected_reasons['audit_failed']}")
     logging.info(summary)
+
     
 def job_monitor_watchlist():
     watchlist = get_watchlist()
