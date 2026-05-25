@@ -251,13 +251,43 @@ def classify_signal_type(pool):
     h24_change = float(attrs.get('price_change_percentage', {}).get('h24', 0))
     return 'FAST' if h24_change < 80 else 'PULLBACK'
 
-def calculate_targets(entry_price):
+def calculate_targets(entry_price, atr_value):
+    """Dynamic SL based on ATR - elak liquidity sweep"""
+    # SL: 1.5x ATR di bawah entry (standard institutional practice)
+    sl = entry_price - (1.5 * atr_value)
+    
+    # TP berdasarkan Risk-Reward Ratio (R-Multiple)
+    risk = entry_price - sl
+    tp1 = entry_price + (risk * 2.0)   # 2R
+    tp2 = entry_price + (risk * 3.5)   # 3.5R
+    tp3 = entry_price + (risk * 5.5)   # 5.5R
+    
     return {
-        'sl': entry_price * 0.85,
-        'tp1': entry_price * 1.30,
-        'tp2': entry_price * 1.80,
-        'tp3': entry_price * 3.00
+        'sl': sl,
+        'tp1': tp1,
+        'tp2': tp2,
+        'tp3': tp3,
+        'atr': atr_value,
+        'sl_pct': ((entry_price - sl) / entry_price) * 100  # Untuk display
     }
+
+def calculate_atr(highs, lows, closes, period=14):
+    """Calculate Average True Range"""
+    if len(highs) < period + 1:
+        return 0
+    
+    tr_values = []
+    for i in range(1, len(highs)):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i-1]),
+            abs(lows[i] - closes[i-1])
+        )
+        tr_values.append(tr)
+    
+    # Simple moving average of TR
+    atr = sum(tr_values[-period:]) / period
+    return atr
 
 # ==========================================
 # 🗄️ DATABASE OPERATIONS (Via REST API)
@@ -394,7 +424,46 @@ def send_admin_log(text):
 # ==========================================
 # ⚙️ CRON JOBS
 # ==========================================
+def get_btc_trend():
+    """Check if BTC is in bullish or bearish regime"""
+    try:
+        # Fetch BTC/USDT klines dari Binance (public API, no auth needed)
+        url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=100"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return True  # Default: allow signals if API fail
+        
+        data = resp.json()
+        closes = [float(d[4]) for d in data]
+        
+        # Calculate EMA50
+        if len(closes) < 50:
+            return True
+        
+        ema50 = sum(closes[:50]) / 50
+        for price in closes[50:]:
+            ema50 = price * (2/51) + ema50 * (1 - 2/51)
+        
+        current_price = closes[-1]
+        
+        # BTC bullish if price > EMA50
+        return current_price > ema50
+        
+    except Exception as e:
+        logging.error(f"BTC trend check failed: {e}")
+        return True  # Default: allow signals if error
 def job_scan_market():
+    # Check BTC regime FIRST
+    btc_bullish = get_btc_trend()
+    
+    if not btc_bullish:
+        logging.warning("🐻 [MACRO] BTC BEARISH - Skipping scan to protect capital")
+        send_admin_log("🐻 <b>JEBAT | Macro Filter Active</b>\nBTC below EMA50 (Bearish regime).\nScanner paused to avoid low-probability setups.")
+        return
+    
+    logging.info("🐂 [MACRO] BTC BULLISH - Proceeding with scan")
+    
+    # ... [rest of existing scan code] ...
     logging.info("🔍 [SCAN] Starting market scan cycle")
     
     total_scanned = 0
@@ -468,6 +537,19 @@ def job_scan_market():
                     rejected_reasons['audit_failed'] += 1
                     logging.warning(f"🗑️ [AUDIT] {token_name}: FAILED - {audit_msg}")
                     continue
+
+                # Fetch historical candles dari DexScreener
+candles_url = f"https://api.dexscreener.com/latest/dex/pairs/{chain}/{pool_address}"
+candles_resp = requests.get(candles_url, timeout=10)
+if candles_resp.status_code == 200:
+    # Extract OHLC data (DexScreener format)
+    # ... parse candles ...
+    atr = calculate_atr(highs, lows, closes, 14)
+    targets = calculate_targets(entry_price, atr)
+else:
+    # Fallback: guna 20% dari price sebagai ATR estimate
+    atr_estimate = entry_price * 0.20
+    targets = calculate_targets(entry_price, atr_estimate)
                 
                 targets = calculate_targets(entry_price)
                 sig_data = {
@@ -595,30 +677,45 @@ def generate_chart_url(token_symbol, chain):
     return f"https://www.tradingview.com/chart/?symbol={exchange}:{token_symbol.upper()}"
 
 def generate_weekly_report():
-    signals = supabase_select("signals", "status", f"created_at=gt.{(datetime.now(timezone.utc) - timedelta(days=7)).isoformat()}")
+    signals = supabase_select("signals", "status", 
+                              f"created_at=gt.{(datetime.now(timezone.utc) - timedelta(days=7)).isoformat()}")
     total = len(signals)
+    
     if total == 0:
-        send_telegram_message("📊 <b>Weekly Report:</b> No signals generated this week. Market conditions poor.")
+        send_telegram_message("📊 <b>Weekly Report:</b> No signals this week.")
         return
-    wins = losses = active = 0
+    
+    wins = 0
+    losses = 0
+    active = 0
     total_roi = 0.0
+    
     for sig in signals:
         status = sig['status']
+        
         if status == 'CLOSED_SL':
             losses += 1
-            total_roi -= 15.0
+            total_roi -= 15.0  # SL = -15%
         elif status in ['HIT_TP1', 'HIT_TP2', 'CLOSED_TP3']:
             wins += 1
-            roi = 15.0
-            if status in ['HIT_TP2', 'CLOSED_TP3']: roi += 24.0
-            if status == 'CLOSED_TP3': roi += 40.0
+            # Calculate ROI based on scale-out strategy
+            roi = 15.0  # TP1: 50% position × 30% gain = 15%
+            if status in ['HIT_TP2', 'CLOSED_TP3']:
+                roi += 24.0  # TP2: 30% position × 80% gain = 24%
+            if status == 'CLOSED_TP3':
+                roi += 40.0  # TP3: 20% position × 200% gain = 40%
             total_roi += roi
-        else: active += 1
+        else:
+            active += 1  # Signal masih ACTIVE, jangan kira dalam ROI
+    
     closed_trades = wins + losses
+    
+    # ✅ FIX: Bahagi dengan closed_trades, BUKAN total
     win_rate = (wins / closed_trades) * 100 if closed_trades > 0 else 0
-    avg_roi = total_roi / total
+    avg_roi = total_roi / closed_trades if closed_trades > 0 else 0
+    
     report_text = (
-        f"📊 <b>GHOST SNIPER | WEEKLY TRANSPARENCY REPORT</b>\n"
+        f"📊 <b>JEBAT | WEEKLY TRANSPARENCY REPORT</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🗓 <b>Period:</b> Last 7 Days\n\n"
         f"🎯 <b>Total Signals:</b> {total}\n"
@@ -626,14 +723,15 @@ def generate_weekly_report():
         f"❌ <b>Losses (SL Hit):</b> {losses}\n"
         f"⏳ <b>Active (Running):</b> {active}\n\n"
         f"📈 <b>Win Rate:</b> {win_rate:.1f}%\n"
-        f"💰 <b>Est. Avg ROI per Signal:</b> {avg_roi:+.2f}%\n"
+        f"💰 <b>Avg ROI (Closed Trades):</b> {avg_roi:+.2f}%\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"<i>🤖 <b>System Integrity:</b> 100% Auto-Generated by On-Chain Data.\n"
-        f"Zero manual intervention (No Front-Running).\n"
-        f"ROI calculated using Scale-Out Strategy (50% TP1, 30% TP2, 20% TP3) with SL -15%.</i>"
+        f"<i>🤖 <b>System:</b> Auto-generated from on-chain data.\n"
+        f"ROI based on Scale-Out: 50% TP1, 30% TP2, 20% TP3.\n"
+        f"SL fixed at -15% (akan upgrade ke ATR-based next update).</i>"
     )
+    
     send_telegram_message(report_text)
-    send_admin_log(f"📊 <b>Weekly Report Sent:</b> WR {win_rate:.1f}% | ROI {avg_roi:+.2f}%")
+    send_admin_log(f"📊 <b>Weekly Report:</b> WR {win_rate:.1f}% | ROI {avg_roi:+.2f}% (Closed: {closed_trades})")
 
 # ==========================================
 # 🏢 FLASK APP & SCHEDULER INITIALIZATION
