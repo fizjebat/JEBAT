@@ -529,14 +529,24 @@ def job_scan_market():
             
             signal_type = classify_signal_type(pool)
             
-            if signal_type == 'FAST':
-                logging.info(f"⚡ [CLASSIFY] {token_name}: FAST BREAKOUT")
-                audit_passed, audit_msg = auto_audit_token(chain, token_address)
-                
-                if not audit_passed:
-                    rejected_reasons['audit_failed'] += 1
-                    logging.warning(f"🗑️ [AUDIT] {token_name}: FAILED - {audit_msg}")
-                    continue
+        if signal_type == 'FAST':
+            logging.info(f"⚡ [CLASSIFY] {token_name}: FAST BREAKOUT ")
+            audit_passed, audit_msg = auto_audit_token(chain, token_address)
+            
+            if not audit_passed:
+                rejected_reasons['audit_failed'] += 1
+                logging.warning(f"🗑️ [AUDIT] {token_name}: FAILED - {audit_msg} ")
+                continue
+
+            # Guna 20% dari price sebagai ATR estimate (safe default untuk meme coins)
+            atr_estimate = entry_price * 0.20
+            targets = calculate_targets(entry_price, atr_estimate)
+            
+            sig_data = {
+                'chain': chain, 'token_address': token_address,
+                'pool_address': pool_address, 'token_name': token_name,
+                'entry_price': entry_price, 'signal_type': 'FAST', **targets
+            }
 
                 # Fetch historical candles dari DexScreener
 candles_url = f"https://api.dexscreener.com/latest/dex/pairs/{chain}/{pool_address}"
