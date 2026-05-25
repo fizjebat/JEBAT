@@ -466,29 +466,39 @@ def job_monitor_watchlist():
 
 def job_monitor_signals():
     active_signals = get_active_signals()
-    if not active_signals: return
+    if not active_signals: 
+        return
+        
     tokens_to_check = {sig['token_address']: sig for sig in active_signals}
     prices = fetch_current_prices(list(tokens_to_check.keys()))
     
     for addr, sig in tokens_to_check.items():
         current_price = prices.get(addr)
-        if not current_price: continue
+        if not current_price: 
+            continue
+            
         new_status = sig['status']
-        if current_price <= sig['sl']: new_status = "CLOSED_SL"
-        elif current_price >= sig['tp3']: new_status = "CLOSED_TP3"
-        elif current_price >= sig['tp2'] and sig['status'] not in ['HIT_TP2', 'CLOSED_TP3']: new_status = "HIT_TP2"
-        elif current_price >= sig['tp1'] and sig['status'] == 'ACTIVE': new_status = "HIT_TP1"
+        
+        if current_price <= sig['sl']: 
+            new_status = "CLOSED_SL"
+        elif current_price >= sig['tp3']: 
+            new_status = "CLOSED_TP3"
+        elif current_price >= sig['tp2'] and sig['status'] not in ['HIT_TP2', 'CLOSED_TP3']: 
+            new_status = "HIT_TP2"
+        elif current_price >= sig['tp1'] and sig['status'] == 'ACTIVE': 
+            new_status = "HIT_TP1"
+        
         if new_status != sig['status']:
             updated_text = format_signal_text(sig, new_status)
-    
+            
             # Tambah chart link bila TP kena
             if "TP1" in new_status or "TP2" in new_status or "TP3" in new_status:
-            chart_link = generate_chart_url(sig['token_name'], sig['chain'])
-            updated_text += f"\n\n📊 <b>CHART:</b> <a href='{chart_link}'>Buka Chart Live</a>"
-    
-        keyboard = build_keyboard(sig['chain'], sig['token_address'], sig['pool_address'], sig['token_name'], "")
-        edit_telegram_message(sig['tg_msg_id'], updated_text, keyboard)
-        update_signal_status(sig['id'], new_status)
+                chart_link = generate_chart_url(sig['token_name'], sig['chain'])
+                updated_text += f"\n\n📊 <b>CHART:</b> <a href='{chart_link}'>Buka Chart Live</a>"
+            
+            keyboard = build_keyboard(sig['chain'], sig['token_address'], sig['pool_address'], sig['token_name'], "")
+            edit_telegram_message(sig['tg_msg_id'], updated_text, keyboard)
+            update_signal_status(sig['id'], new_status)
 
 def generate_chart_url(token_symbol, chain):
     """Generate TradingView lightweight chart link - No Selenium/Pillow needed"""
