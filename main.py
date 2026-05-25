@@ -530,53 +530,37 @@ def job_scan_market():
             signal_type = classify_signal_type(pool)
             
         if signal_type == 'FAST':
-            logging.info(f"⚡ [CLASSIFY] {token_name}: FAST BREAKOUT ")
+            logging.info(f"⚡ [CLASSIFY] {token_name}: FAST BREAKOUT")
             audit_passed, audit_msg = auto_audit_token(chain, token_address)
             
             if not audit_passed:
                 rejected_reasons['audit_failed'] += 1
-                logging.warning(f"🗑️ [AUDIT] {token_name}: FAILED - {audit_msg} ")
+                logging.warning(f"🗑️ [AUDIT] {token_name}: FAILED - {audit_msg}")
                 continue
 
-            # Guna 20% dari price sebagai ATR estimate (safe default untuk meme coins)
+            # Guna 20% dari price sebagai ATR estimate
             atr_estimate = entry_price * 0.20
             targets = calculate_targets(entry_price, atr_estimate)
             
             sig_data = {
-                'chain': chain, 'token_address': token_address,
-                'pool_address': pool_address, 'token_name': token_name,
-                'entry_price': entry_price, 'signal_type': 'FAST', **targets
+                'chain': chain, 
+                'token_address': token_address,
+                'pool_address': pool_address, 
+                'token_name': token_name,
+                'entry_price': entry_price, 
+                'signal_type': 'FAST', 
+                **targets
             }
-
-                # Fetch historical candles dari DexScreener
-candles_url = f"https://api.dexscreener.com/latest/dex/pairs/{chain}/{pool_address}"
-candles_resp = requests.get(candles_url, timeout=10)
-if candles_resp.status_code == 200:
-    # Extract OHLC data (DexScreener format)
-    # ... parse candles ...
-    atr = calculate_atr(highs, lows, closes, 14)
-    targets = calculate_targets(entry_price, atr)
-else:
-    # Fallback: guna 20% dari price sebagai ATR estimate
-    atr_estimate = entry_price * 0.20
-    targets = calculate_targets(entry_price, atr_estimate)
-                
-                targets = calculate_targets(entry_price)
-                sig_data = {
-                    'chain': chain, 'token_address': token_address,
-                    'pool_address': pool_address, 'token_name': token_name,
-                    'entry_price': entry_price, 'signal_type': 'FAST', **targets
-                }
-                
-                text = format_signal_text(sig_data, "ACTIVE", audit_msg)
-                keyboard = build_keyboard(chain, token_address, pool_address, token_name, audit_msg)
-                msg_id = send_telegram_message(text, keyboard)
-                
-                if msg_id:
-                    sig_data['tg_msg_id'] = msg_id
-                    if save_signal(sig_data):
-                        found_fast += 1
-                        logging.info(f"📤 [SIGNAL] {token_name}: SENT (msg_id={msg_id})")
+            
+            text = format_signal_text(sig_data, "ACTIVE", audit_msg)
+            keyboard = build_keyboard(chain, token_address, pool_address, token_name, audit_msg)
+            msg_id = send_telegram_message(text, keyboard)
+            
+            if msg_id:
+                sig_data['tg_msg_id'] = msg_id
+                if save_signal(sig_data):
+                    found_fast += 1
+                    logging.info(f"📤 [SIGNAL] {token_name}: SENT (msg_id={msg_id})")
             else:
                 logging.info(f"🎯 [CLASSIFY] {token_name}: PULLBACK CANDIDATE")
                 watchlist_data = {
