@@ -889,13 +889,35 @@ def process_pool_candidate(pool, chain, rejected):
         rejected['no_address'] = rejected.get('no_address', 0) + 1
         return None
     
-    # Duplicate check (24h cooldown per token)
-    time_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat().replace('+00:00', 'Z')
-    existing = supabase_select("signals", "id",
-                              f"token_address=eq.{token_address}&created_at=gt.{time_24h}")
-    if existing:
-        rejected['duplicate'] = rejected.get('duplicate', 0) + 1
-        return None
+    # Smart cooldown berdasarkan outcome signal sebelumnya
+    # SL: 1 jam — bagi masa selepas sweep, scoring akan reject kalau masih turun
+    # Active/TP1/TP2: Block — jangan open 2 position sama serentak
+    # TP3: 8 jam — token perlu reset selepas big move
+    now = datetime.now(timezone.utc)
+    recent_signals = supabase_select(
+        "signals", "id,status,created_at",
+        f"token_address=eq.{token_address}&created_at=gt.{(now - timedelta(hours=24)).isoformat().replace('+00:00','Z')}"
+    )
+    for prev in recent_signals:
+        prev_status = prev.get('status', '')
+        try:
+            prev_time = datetime.fromisoformat(prev['created_at'].replace('Z', '+00:00'))
+        except (KeyError, ValueError):
+            continue
+        elapsed_hours = (now - prev_time).total_seconds() / 3600
+
+        if prev_status in ['ACTIVE', 'HIT_TP1', 'HIT_TP2']:
+            # Ada position masih buka — block sepenuhnya
+            rejected['duplicate'] = rejected.get('duplicate', 0) + 1
+            return None
+        elif prev_status == 'CLOSED_SL' and elapsed_hours < 1.0:
+            # SL baru kena — tunggu 1 jam
+            rejected['duplicate'] = rejected.get('duplicate', 0) + 1
+            return None
+        elif prev_status == 'CLOSED_TP3' and elapsed_hours < 8.0:
+            # TP3 baru hit — tunggu 8 jam
+            rejected['duplicate'] = rejected.get('duplicate', 0) + 1
+            return None
     
     # Audit (expensive — buat last)
     audit_passed, sec_score, audit_msg = audit_token(chain, token_address)
