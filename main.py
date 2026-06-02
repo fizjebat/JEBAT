@@ -111,10 +111,8 @@ CURRENT_SETTING = 'STANDARD'  # Default
 # ==========================================
 # 🧠 GLOBAL STATE
 # ==========================================
-# ② SL streak per token_address: {'addr': count}
-sl_streak = {}
-
 # ④ Rolling win rate penalty (+15 penalti kalau WR < 22%)
+# Dikira semula setiap scan cycle — restart safe
 rolling_wr_penalty = 0
 
 # ==========================================
@@ -950,8 +948,8 @@ def process_pool_candidate(pool, chain, rejected):
     breakdown = compute_composite_score(attrs, age_hours, sec_score)
     total_score = sum(breakdown.values())
 
-    # ② Penalti skor berdasarkan streak SL
-    streak = sl_streak.get(token_address, 0)
+    # ② Penalti skor berdasarkan streak SL (baca dari DB — persistent across restarts)
+    streak = get_token_streak(token_address)
     if streak == 2:
         total_score -= 15
     elif streak >= 3:
@@ -974,15 +972,15 @@ def process_pool_candidate(pool, chain, rejected):
     
     vol_pct = calculate_volatility_pct(attrs)
 
-    # ② Progressive SL berdasarkan streak SL token ini
-    streak = sl_streak.get(token_address, 0)
+    # ② Progressive SL berdasarkan streak SL token ini (dari DB)
+    streak = get_token_streak(token_address)
     if streak >= 4:
         rejected['streak_block'] = rejected.get('streak_block', 0) + 1
-        return None  # Block 24 jam — ditangani oleh streak reset dalam monitor
+        return None
     elif streak == 3:
-        vol_pct = min(VOL_MAX_PCT, vol_pct * 2.0)   # SL 2x lebar
+        vol_pct = min(VOL_MAX_PCT, vol_pct * 2.0)
     elif streak == 2:
-        vol_pct = min(VOL_MAX_PCT, vol_pct * 1.5)   # SL 1.5x lebar
+        vol_pct = min(VOL_MAX_PCT, vol_pct * 1.5)
 
     targets = calculate_targets(entry_price, vol_pct)
     
@@ -1157,11 +1155,11 @@ def job_monitor_signals():
             current = sweep_prices.get(addr)
             sl_level = float(sc.get('sweep_sl_level', 0) or 0)
             if current and sl_level > 0 and current > sl_level * 1.003:
-                # Harga dah recover atas SL — ini sweep/stop hunt, bukan failure
-                addr_full = sc['token_address']
-                if sl_streak.get(addr_full, 0) > 0:
-                    sl_streak[addr_full] -= 1
-                    print(f"[JEBAT] 🔄 {sc['token_name']} sweep detected — streak {sl_streak[addr_full]+1}→{sl_streak[addr_full]}", flush=True)
+                # Harga dah recover atas SL — ini sweep/stop hunt
+                # Streak dikira dari DB (get_token_streak) — tak perlu update memory
+                # Kesan: signal seterusnya akan dapat streak yang lebih rendah secara automatik
+                # kerana signal ini akan ada sweep_check_at = None (dah recover)
+                print(f"[JEBAT] 🔄 {sc['token_name']} sweep detected — streak akan auto-adjust via DB", flush=True)
             # Clear sweep_check_at supaya tak check dua kali
             supabase_update("signals", {"sweep_check_at": None, "sweep_sl_level": 0},
                            {"id": f"eq.{sc['id']}"})
@@ -1230,21 +1228,13 @@ def job_monitor_signals():
                 if sig.get('tg_msg_id'):
                     edit_telegram_message(sig['tg_msg_id'], text, keyboard)
 
-                # ② Update sl_streak
+                # ② sl_streak kini dikira dari DB via get_token_streak() — tiada memory state diperlukan
+                # ③ Sweep recovery — simpan timestamp untuk check 30 minit
                 if new_status == 'CLOSED_SL' and old_status == 'ACTIVE':
-                    addr = sig['token_address']
-                    sl_streak[addr] = sl_streak.get(addr, 0) + 1
-                    if sl_streak[addr] >= 4:
-                        print(f"[JEBAT] 🚫 {sig['token_name']} streak={sl_streak[addr]} — blocked 24h", flush=True)
-                    # ③ Sweep recovery — check harga dalam 30 minit
-                    # Simpan SL asal untuk dibanding selepas 30 min
                     supabase_update("signals",
                                     {"sweep_check_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat().replace('+00:00','Z'),
                                      "sweep_sl_level": float(sig['sl'])},
                                     {"id": f"eq.{sig['id']}"})
-                elif new_status in ['CLOSED_TP3', 'HIT_TP2']:
-                    # Win — reset streak
-                    sl_streak[sig['token_address']] = 0
                 r_pct = float(sig.get('r_value_pct', 0))
                 be_hit = old_status in ['HIT_TP1', 'HIT_TP2']
 
@@ -1327,7 +1317,28 @@ def generate_weekly_report():
 # 📓 JOURNAL & BOT COMMAND HANDLER
 # ==========================================
 
-def generate_journal():
+def get_token_streak(token_address):
+    """
+    Kira consecutive SL streak terus dari Supabase.
+    Robust terhadap server restart — tak bergantung pada memory.
+    Semak signal 48 jam terakhir, kira berapa kali SL_FULL berturut-turut
+    (berhenti bila jumpa win atau tiada signal).
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat().replace('+00:00', 'Z')
+    recent = supabase_select(
+        "signals", "status,prev_status,created_at",
+        f"token_address=eq.{token_address}&created_at=gt.{cutoff}&order=created_at.desc&limit=10"
+    )
+    streak = 0
+    for sig in recent:
+        status = sig.get('status', '')
+        prev_st = sig.get('prev_status', '') or ''
+        is_sl_full = (status == 'CLOSED_SL' and prev_st not in ['HIT_TP1', 'HIT_TP2'])
+        if is_sl_full:
+            streak += 1
+        else:
+            break  # Win atau SL_BE/SL_TP1 — streak berhenti
+    return streak
     """
     Journal mingguan detail — dihantar ke channel setiap Ahad 11PM MYT (15:00 UTC).
     Senarai setiap signal, outcome, ROI, dan summary keseluruhan.
