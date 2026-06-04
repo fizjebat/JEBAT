@@ -52,8 +52,8 @@ MIN_SIGNAL_SCORE = 75           # Minimum composite score untuk signal (max 105)
 MIN_LIQUIDITY_USD = 30_000
 MIN_VOLUME_24H_USD = 80_000     # Sikit lebih longgar dari v4
 FDV_MIN = 50_000
-FDV_MAX = 8_000_000             # Lebih longgar — early movers
-AGE_MIN_HOURS = 2
+FDV_MAX = 9_000_000             # Lebih longgar — early movers
+AGE_MIN_HOURS = 0.5
 AGE_MAX_HOURS = 168             # 7 hari
 
 # Volatility clamp: minimum 6%, maximum 20%
