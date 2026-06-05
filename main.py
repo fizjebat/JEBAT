@@ -36,8 +36,8 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 PORT = int(os.getenv("PORT", 5000))
 INSTANCE_ID = os.getenv("RENDER_INSTANCE_ID", f"local-{os.getpid()}")
 
-TARGET_CHAINS = ['solana', 'base', 'bsc']
-GOPLUS_CHAIN_IDS = {'base': '8453', 'bsc': '56'}
+TARGET_CHAINS = ['solana', 'bsc']
+GOPLUS_CHAIN_IDS = {'bsc': '56'}
 HEADERS = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -52,7 +52,7 @@ MIN_SIGNAL_SCORE = 75           # Minimum composite score untuk signal (max 105)
 MIN_LIQUIDITY_USD = 30_000
 MIN_VOLUME_24H_USD = 80_000     # Sikit lebih longgar dari v4
 FDV_MIN = 50_000
-FDV_MAX = 8_000_000             # Lebih longgar — early movers
+FDV_MAX = 9_000_000             # Lebih longgar — early movers
 AGE_MIN_HOURS = 2
 AGE_MAX_HOURS = 168             # 7 hari
 
@@ -309,7 +309,7 @@ def fetch_current_prices(token_addresses):
     try:
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
-            pairs = resp.json().get('pairs', [])
+            pairs = resp.json().get('pairs') or []
             # Ambil pool dengan liquidity tertinggi untuk setiap token
             result = {}
             for p in pairs:
