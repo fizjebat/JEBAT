@@ -315,7 +315,7 @@ def fetch_current_prices(token_addresses):
     try:
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
-            pairs = resp.json().get('pairs', [])
+            pairs = resp.json().get('pairs') or []
             # Ambil pool dengan liquidity tertinggi untuk setiap token
             result = {}
             for p in pairs:
