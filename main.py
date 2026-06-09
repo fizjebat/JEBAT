@@ -29,7 +29,7 @@ TARGET SELEPAS PATCH:
 # ==========================================
 
 # --- GANTI nilai ini ---
-AGE_MAX_HOURS = 72          # Turun dari 168 ke 72 — CEX guard tangani yang lama
+AGE_MAX_HOURS = 120          # Turun dari 168 ke 72 — CEX guard tangani yang lama
 
 # --- TAMBAH di bawah AGE_MAX_HOURS ---
 H1_MIN_CHANGE    = 8.0      # Minimum h1 % untuk qualify — naik dari >0 ke >8%
